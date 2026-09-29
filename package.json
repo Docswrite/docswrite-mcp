@@ -1,6 +1,6 @@
 {
   "name": "@docswrite/docswrite-mcp",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "MCP server for Docswrite: publish Google Docs to WordPress from Claude, Cursor and other AI assistants",
   "author": "Dvir Atias",
   "homepage": "https://docswrite.com",
