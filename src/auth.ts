@@ -1,102 +1,90 @@
-import { authenticate } from "@google-cloud/local-auth";
 import { OAuth2Client } from "google-auth-library";
 import * as fs from "fs";
 import * as path from "path";
-import { startOAuthServer } from './oauth-server.js';
+import { fileURLToPath } from "url";
+import { startOAuthServer, OAUTH_PORT } from './oauth-server.js';
 import { parseArgs } from './utils.js';
-// Set up OAuth2.0 scopes
+
+// OAuth2 scopes for the optional Google Docs tools.
 export const SCOPES = [
     "https://www.googleapis.com/auth/documents",
     "https://www.googleapis.com/auth/drive",
-    "https://www.googleapis.com/auth/drive.readonly"
 ];
 
-// Resolve paths relative to the project root
-const PROJECT_ROOT = path.resolve(path.join(path.dirname(new URL(import.meta.url).pathname), '..'));
-const TOKEN_PATH = path.join(PROJECT_ROOT, "token.json");
-const CREDENTIALS_PATH = path.join(PROJECT_ROOT, "credentials.json");
-const REDIRECT_URIS = parseArgs()['redirectUris'] || "http://localhost:3000/oauth2callback";
+const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const args = parseArgs();
 
-export async function authorize() {
-    try {
-        // Load client secrets
-        const content = fs.readFileSync(CREDENTIALS_PATH, "utf-8");
-        const keys = JSON.parse(content);
-        const { client_id, client_secret } = keys.web;
-        
-        // Create OAuth2 client
-        const oAuth2Client = new OAuth2Client(
-            client_id,
-            client_secret,
-            REDIRECT_URIS
-        );
-
-        // Check for existing token
-        if (fs.existsSync(TOKEN_PATH)) {
-            const tokens = JSON.parse(fs.readFileSync(TOKEN_PATH, "utf-8"));
-            oAuth2Client.setCredentials(tokens);
-            return oAuth2Client;
-        }
-
-        // Generate authorization URL
-        const authUrl = oAuth2Client.generateAuthUrl({
-            access_type: 'offline',
-            scope: SCOPES,
-        });
-
-        console.error('Authorize this app by visiting this url:', authUrl);
-        
-        // Start OAuth server to handle callback
-        startOAuthServer();
-
-        // Wait for user to complete authorization
-        return new Promise<OAuth2Client>((resolve, reject) => {
-            const checkToken = setInterval(() => {
-                if (fs.existsSync(TOKEN_PATH)) {
-                    clearInterval(checkToken);
-                    const tokens = JSON.parse(fs.readFileSync(TOKEN_PATH, "utf-8"));
-                    oAuth2Client.setCredentials(tokens);
-                    resolve(oAuth2Client);
-                }
-            }, 1000);
-
-            // Timeout after 5 minutes
-            setTimeout(() => {
-                clearInterval(checkToken);
-                reject(new Error('Authorization timed out'));
-            }, 300000);
-        });
-    } catch (error) {
-        console.error("Error authorizing with Google:", error);
-        throw error;
+/**
+ * Where the Google OAuth client file lives. The Google Docs tools are optional:
+ * they are only enabled when one of these points at an existing file.
+ *   --googleCredentials <path> | GOOGLE_CREDENTIALS_PATH | <package root>/credentials.json (local dev)
+ */
+export function resolveCredentialsPath(): string | null {
+    const candidates = [
+        args['googleCredentials'],
+        process.env.GOOGLE_CREDENTIALS_PATH,
+        path.join(PROJECT_ROOT, "credentials.json"),
+    ].filter((p): p is string => !!p);
+    for (const candidate of candidates) {
+        const resolved = path.resolve(candidate);
+        if (fs.existsSync(resolved)) return resolved;
     }
+    return null;
 }
 
-export async function handleOAuthCallback(code: string): Promise<OAuth2Client> {
-    try {
-        // Load client secrets
-        const content = fs.readFileSync(CREDENTIALS_PATH, "utf-8");
-        const keys = JSON.parse(content);
-        const { client_id, client_secret } = keys.web;
-        
-        // Create OAuth2 client
-        const oAuth2Client = new OAuth2Client(
-            client_id,
-            client_secret,
-            REDIRECT_URIS
-        );
+function resolveTokenPath(credentialsPath: string): string {
+    const explicit = args['googleToken'] || process.env.GOOGLE_TOKEN_PATH;
+    if (explicit) return path.resolve(explicit);
+    return path.join(path.dirname(credentialsPath), "token.json");
+}
 
-        // Exchange code for tokens
-        const { tokens } = await oAuth2Client.getToken(code);
-        oAuth2Client.setCredentials(tokens);
+function redirectUri(): string {
+    return args['redirectUris'] || `http://localhost:${OAUTH_PORT}/oauth2callback`;
+}
 
-        // Store the tokens
-        fs.writeFileSync(TOKEN_PATH, JSON.stringify(tokens));
-        console.error("Tokens stored successfully at:", TOKEN_PATH);
-
-        return oAuth2Client;
-    } catch (error) {
-        console.error("Error handling OAuth callback:", error);
-        throw error;
+function createClient(credentialsPath: string): OAuth2Client {
+    const keys = JSON.parse(fs.readFileSync(credentialsPath, "utf-8"));
+    const conf = keys.web || keys.installed;
+    if (!conf?.client_id || !conf?.client_secret) {
+        throw new Error(`${credentialsPath} is not a Google OAuth client file (expected a "web" or "installed" section).`);
     }
-} 
+    return new OAuth2Client(conf.client_id, conf.client_secret, redirectUri());
+}
+
+export type AuthResult =
+    | { status: "ready"; client: OAuth2Client }
+    | { status: "needs_consent"; authUrl: string };
+
+/**
+ * Returns an authorized client when a token is stored; otherwise starts the local
+ * callback server and returns the consent URL so the tool can hand it to the user
+ * (stdout belongs to the MCP protocol, so we cannot just print it).
+ */
+export async function authorize(credentialsPath: string): Promise<AuthResult> {
+    const client = createClient(credentialsPath);
+    const tokenPath = resolveTokenPath(credentialsPath);
+
+    if (fs.existsSync(tokenPath)) {
+        client.setCredentials(JSON.parse(fs.readFileSync(tokenPath, "utf-8")));
+        client.on("tokens", (tokens) => {
+            // Persist refreshed tokens, keeping the refresh_token we already had.
+            try {
+                const current = JSON.parse(fs.readFileSync(tokenPath, "utf-8"));
+                fs.writeFileSync(tokenPath, JSON.stringify({ ...current, ...tokens }), { mode: 0o600 });
+            } catch (err) {
+                console.error("Could not persist refreshed Google token:", err);
+            }
+        });
+        return { status: "ready", client };
+    }
+
+    const authUrl = client.generateAuthUrl({ access_type: 'offline', prompt: 'consent', scope: SCOPES });
+    startOAuthServer(async (code) => {
+        const { tokens } = await client.getToken(code);
+        fs.mkdirSync(path.dirname(tokenPath), { recursive: true });
+        fs.writeFileSync(tokenPath, JSON.stringify(tokens), { mode: 0o600 });
+        console.error("Google tokens stored at:", tokenPath);
+    });
+    console.error('Authorize Google Docs access by visiting:', authUrl);
+    return { status: "needs_consent", authUrl };
+}

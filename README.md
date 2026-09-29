@@ -1,227 +1,132 @@
 # Docswrite MCP Server
 
-Docswrite created the first in the world MCP to write to Google Docs and turn the google docs into a perfectly formatted post on WordPress.
+Publish Google Docs to WordPress from Claude, Cursor, or any other MCP client.
+Docswrite turns the doc (headings, images, links, tables) into a formatted post,
+uploads the images, and fills in SEO fields.
 
-This server provides tools for working with Google Docs, Google Drive, and WordPress through Docswrite.
+## Quick start
+
+1. In the Docswrite dashboard (https://docswrite.com), open your site's **Automation** page and copy its API token.
+   Tokens are per site: the server publishes to the site the token was created for.
+2. Run the server (Node.js 18+):
+
+```bash
+npx -y @docswrite/docswrite-mcp --docswriteToken <token>
+```
+
+Until the npm package is published, run it straight from GitHub (same flags):
+
+```bash
+npx -y github:Docswrite/docswrite-mcp --docswriteToken <token>
+```
+
+The token can also be passed as `--docswriteToken=<token>` or through the
+`DOCSWRITE_TOKEN` environment variable.
+
+> Publishing through the API/MCP currently supports **WordPress** sites.
+
+## Client setup
+
+### Claude Code
+
+```bash
+claude mcp add docswrite -e DOCSWRITE_TOKEN=<token> -- npx -y @docswrite/docswrite-mcp
+```
+
+### Claude Desktop
+
+Edit `claude_desktop_config.json` (Settings -> Developer -> Edit Config):
+
+```json
+{
+  "mcpServers": {
+    "docswrite": {
+      "command": "npx",
+      "args": ["-y", "@docswrite/docswrite-mcp"],
+      "env": { "DOCSWRITE_TOKEN": "<token>" }
+    }
+  }
+}
+```
+
+### Cursor
+
+Add to `~/.cursor/mcp.json` (or `.cursor/mcp.json` in a project):
+
+```json
+{
+  "mcpServers": {
+    "docswrite": {
+      "command": "npx",
+      "args": ["-y", "@docswrite/docswrite-mcp"],
+      "env": { "DOCSWRITE_TOKEN": "<token>" }
+    }
+  }
+}
+```
+
+Other clients (Windsurf, VS Code, Cline, ...) use the same `command` / `args` / `env`.
+To run from GitHub instead of npm, replace `@docswrite/docswrite-mcp` with
+`github:Docswrite/docswrite-mcp`.
 
 ## Tools
 
-### 1. Google Docs & Drive Tools
+### `docswrite-publish`
 
-#### `google-docs-create`
+Publishes a Google Doc to the WordPress site connected to the token. The doc must be
+readable by your Docswrite account. Returns a `jobId`; publishing is asynchronous.
 
-Creates a new Google Docs document.
+- `google_docs_url` (required): URL of the Google Doc
+- `title`, `slug`, `excerpt`, `author`
+- `tags`, `categories`: comma-separated names
+- `state`: `draft` (default), `published`, `future`, `pending`, `private`
+- `date`: ISO 8601; a future date schedules the post
+- `post_type`: `post` (default) or `page`
+- `featured_image_url`, `featured_image_alt_text`, `featured_image_caption`
+- `export_settings`: `compress_images`, `demote_headings`, `convert_to_webp`,
+  `first_image_as_featured_image`, `add_no_follow_to_external_links`, `bold_as_strong`, `wp_content_editor`
+- `yoast_settings`: `yoast_focuskw`, `yoast_metadesc`, `yoast_title`
+- `rankmath_settings`: `rank_math_focus_keyword`
+- `newspack_settings`: `newspack_article_summary`, `newspack_article_summary_title`, `newspack_post_subtitle`
 
-- `title`: The title of the new document
-- `content`: The content to write to the document
+### `docswrite-job-status`
 
-#### `google-docs-update`
+Checks a job returned by `docswrite-publish` (`jobId`, `queueType` defaults to `post`).
+`state` is `waiting`, `active`, `delayed`, `completed` or `failed`; a completed job
+includes the published post, a failed one includes `failedReason`.
 
-Updates an existing Google Docs document.
+### Optional: Google Docs tools
 
-- `documentId`: The ID of the document to update
-- `content`: The content to write to the document
-- `replaceAll` (optional): Whether to replace all content (true) or append (false)
+`google-docs-create`, `google-docs-update`, `google-docs-search` and `google-docs-delete`
+let the assistant write drafts into your own Google Drive. They need your own Google
+OAuth client and are hidden unless one is configured:
 
-#### `google-docs-search`
+1. In Google Cloud Console enable the Google Docs API and Google Drive API and create an
+   OAuth client (type "Web application", redirect URI `http://localhost:3000/oauth2callback`).
+2. Download the JSON and start the server with
+   `--googleCredentials /path/to/credentials.json` (or `GOOGLE_CREDENTIALS_PATH`).
+3. The first Google Docs tool call returns a consent URL; open it, approve, and retry.
+   The token is stored next to the credentials file (override with `--googleToken` / `GOOGLE_TOKEN_PATH`).
 
-Searches for Google Docs documents using Google Drive API.
+## Errors
 
-- `query`: The search query to find documents
-- Returns: List of documents with ID, name, creation time, and last modified time
+Tool failures come back with `isError: true` and a message the assistant can act on,
+for example an invalid/expired token (HTTP 401), a token used for another site (403),
+an inactive plan, or a failed WordPress publish with the reason.
 
-#### `google-docs-delete`
-
-Deletes a Google Docs document using Google Drive API.
-
-- `documentId`: The ID of the document to delete
-
-### 2. Docswrite Tools
-
-#### `docswrite-publish`
-
-Publishes content from Google Docs to WordPress.
-
-- `google_docs_url` (required): URL of the Google Docs document
-- `title` (optional): Title of the blog post
-- `slug` (optional): URL slug for the post
-- `tags` (optional): Comma-separated list of tags
-- `categories` (optional): Comma-separated list of categories
-- `state` (optional): Post state (draft/publish)
-- `author` (optional): Author name
-- `date` (optional): Publication date
-- `excerpt` (optional): Post excerpt
-- `post_type` (optional): Post type (post/page)
-- `featured_image_url` (optional): URL of the featured image
-- `featured_image_alt_text` (optional): Alt text for featured image
-- `featured_image_caption` (optional): Caption for featured image
-- `export_settings` (optional): Object containing:
-  - `compress_images`: Boolean
-  - `demote_headings`: Boolean
-  - `convert_to_webp`: Boolean
-  - `first_image_as_featured_image`: Boolean
-  - `add_no_follow_to_external_links`: Boolean
-  - `bold_as_strong`: Boolean
-  - `wp_content_editor`: String
-- `newspack_settings` (optional): Object containing:
-  - `newspack_article_summary`: String
-  - `newspack_article_summary_title`: String
-  - `newspack_post_subtitle`: String
-- `yoast_settings` (optional): Object containing:
-  - `yoast_focuskw`: String
-  - `yoast_metadesc`: String
-  - `yoast_title`: String
-- `rankmath_settings` (optional): Object containing:
-  - `rank_math_focus_keyword`: String
-
-#### `docswrite-job-status`
-
-Checks the status of a Docswrite publishing job.
-
-- `jobId`: The ID of the job to check
-- `queueType` (optional): The type of queue (default: "post")
-
-## Project Structure
-
-### Source Files
-
-- `src/index.ts`: Main server implementation and tool definitions
-
-  - Initializes MCP server
-  - Defines and registers all available tools
-  - Handles command-line arguments and environment variables
-
-- `src/auth.ts`: Google OAuth2 authentication handling
-
-  - Manages OAuth2 flow for Google APIs
-  - Handles token storage and refresh
-  - Provides authorization for Google Docs and Drive APIs
-
-- `src/google-docs.ts`: Google Docs and Drive API operations
-
-  - Document creation and manipulation
-  - Content updating and formatting
-  - Document search and deletion
-  - Error handling and response formatting
-
-- `src/docswrite-request.ts`: Docswrite API integration
-
-  - Handles requests to Docswrite service
-  - Manages WordPress publishing queue
-  - Job status checking and monitoring
-
-- `src/oauth-server.ts`: OAuth callback server implementation
-
-  - Handles OAuth2 callback from Google
-  - Manages token exchange
-  - Provides success/failure responses
-
-- `src/config.ts`: Configuration management
-
-  - Environment variables
-  - API endpoints
-  - Default settings
-
-- `src/utils.ts`: Utility functions
-  - Helper methods
-  - Common operations
-  - Shared types and interfaces
-
-## Setup
-
-1. Create a Google Cloud Project and enable:
-
-   - Google Docs API
-   - Google Drive API
-
-2. Configure OAuth2 credentials:
-
-   - Create OAuth2 credentials in Google Cloud Console
-   - Download and save as `credentials.json` in project root
-   - Set redirect URI to `http://localhost:3000/oauth2callback`
-
-3. Install dependencies:
+## Development
 
 ```bash
-npm install
+npm install        # also builds via the prepare script
+npm test           # build + stdio smoke test against a local fake API
+npm run inspector  # MCP Inspector
 ```
 
-4. Build the project:
+`DOCSWRITE_API_BASE` overrides the API host (default `https://api.docswrite.com`).
+
+## Publishing to npm
 
 ```bash
-npm run build
-```
-
-## Usage
-
-Run the server with your Docswrite token:
-
-```bash
-node dist/index.js --docswriteToken=your-docswrite-token
-```
-
-## Example Flows
-
-### 1. Create and Publish Flow
-
-```json
-// 1. Create a new Google Doc
-{
-  "title": "My New Post",
-  "content": "This is the content of my post."
-}
-
-// 2. Publish to WordPress
-{
-  "google_docs_url": "https://docs.google.com/document/d/your-doc-id/edit",
-  "title": "My New Post",
-  "state": "draft"
-}
-
-// 3. Check publishing status
-{
-  "jobId": "your-job-id"
-}
-```
-
-### 2. Search and Update Flow
-
-```json
-// 1. Search for documents
-{
-  "query": "WordPress"
-}
-
-// 2. Update a document
-{
-  "documentId": "your-doc-id",
-  "content": "Updated content",
-  "replaceAll": true
-}
-```
-
-### 3. Document Management Flow
-
-```json
-// 1. Create document
-{
-  "title": "Draft Post",
-  "content": "Initial draft"
-}
-
-// 2. Update content
-{
-  "documentId": "your-doc-id",
-  "content": "Additional content",
-  "replaceAll": false
-}
-
-// 3. Publish to WordPress
-{
-  "google_docs_url": "https://docs.google.com/document/d/your-doc-id/edit",
-  "title": "Final Post",
-  "state": "publish",
-  "categories": "tutorials",
-  "tags": "wordpress, google-docs"
-}
+npm login
+npm publish --access public
 ```

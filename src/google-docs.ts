@@ -1,34 +1,52 @@
 import { google } from "googleapis";
 import { docs_v1, drive_v3 } from "googleapis";
-import { authorize } from "./auth.js";
-
-interface ContentResponse {
-    [key: string]: unknown;
-    type: "text";
-    text: string;
-}
+import { authorize, resolveCredentialsPath } from "./auth.js";
+import { textResult, ToolResult } from "./utils.js";
 
 let docsClient: docs_v1.Docs;
 let driveClient: drive_v3.Drive;
+let clientsReady = false;
 
-// Initialize Google API clients
-export async function initClients() {
+/** True when a Google OAuth client file is configured, i.e. the Google Docs tools can work. */
+export function googleDocsConfigured(): boolean {
+    return resolveCredentialsPath() !== null;
+}
+
+/**
+ * Lazily authorize the Google clients on first use. Returns null when ready,
+ * or a tool result explaining what the user has to do first.
+ */
+async function ensureClients(): Promise<ToolResult | null> {
+    if (clientsReady) return null;
+    const credentialsPath = resolveCredentialsPath();
+    if (!credentialsPath) {
+        return textResult(
+            "Google Docs tools are not configured. Start the MCP server with --googleCredentials <path to Google OAuth client JSON> " +
+            "(or GOOGLE_CREDENTIALS_PATH). Publishing an existing Google Doc with docswrite-publish does not need this.",
+            true
+        );
+    }
     try {
-        console.error("Starting client initialization...");
-        const auth = await authorize();
-        console.error("Auth completed successfully:", !!auth);
-        docsClient = google.docs({ version: "v1", auth: auth as any });
-        console.error("Docs client created:", !!docsClient);
-        driveClient = google.drive({ version: "v3", auth: auth as any });
-        console.error("Drive client created:", !!driveClient);
-        return true;
-    } catch (error) {
+        const auth = await authorize(credentialsPath);
+        if (auth.status === "needs_consent") {
+            return textResult(
+                `Google Docs access is not authorized yet. Ask the user to open this URL, approve access, then retry:\n${auth.authUrl}`,
+                true
+            );
+        }
+        docsClient = google.docs({ version: "v1", auth: auth.client as any });
+        driveClient = google.drive({ version: "v3", auth: auth.client as any });
+        clientsReady = true;
+        return null;
+    } catch (error: any) {
         console.error("Failed to initialize Google API clients:", error);
-        return false;
+        return textResult(`Could not initialize Google Docs access: ${error?.message || error}`, true);
     }
 }
 
-export async function createDoc(title: string, content: string = ""): Promise<{ content: ContentResponse[] }> {
+export async function createDoc(title: string, content: string = ""): Promise<ToolResult> {
+    const notReady = await ensureClients();
+    if (notReady) return notReady;
     try {
         // Create a new document
         const doc = await docsClient.documents.create({
@@ -73,18 +91,13 @@ export async function createDoc(title: string, content: string = ""): Promise<{ 
         };
     } catch (error) {
         console.error("Error creating document:", error);
-        return {
-            content: [
-                {
-                    type: "text",
-                    text: `Error creating document: ${error}`
-                }
-            ]
-        };
+        return textResult(`Error creating document: ${(error as any)?.message || error}`, true);
     }
 }
 
-export async function updateDoc(documentId: string, content: string, replaceAll: boolean = false): Promise<{ content: ContentResponse[] }> {
+export async function updateDoc(documentId: string, content: string, replaceAll: boolean = false): Promise<ToolResult> {
+    const notReady = await ensureClients();
+    if (notReady) return notReady;
     try {
         // Get the document structure
         const doc = await docsClient.documents.get({ documentId });
@@ -143,21 +156,16 @@ export async function updateDoc(documentId: string, content: string, replaceAll:
         };
     } catch (error) {
         console.error("Error updating document:", error);
-        return {
-            content: [
-                {
-                    type: "text",
-                    text: `Error updating document: ${error}`
-                }
-            ]
-        };
+        return textResult(`Error updating document: ${(error as any)?.message || error}`, true);
     }
 }
 
-export async function searchDocs(query: string): Promise<{ content: ContentResponse[] }> {
+export async function searchDocs(query: string): Promise<ToolResult> {
+    const notReady = await ensureClients();
+    if (notReady) return notReady;
     try {
         const response = await driveClient.files.list({
-            q: `mimeType='application/vnd.google-apps.document' and fullText contains '${query}'`,
+            q: `mimeType='application/vnd.google-apps.document' and fullText contains '${query.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'`,
             fields: "files(id, name, createdTime, modifiedTime)",
             pageSize: 10,
         });
@@ -186,18 +194,13 @@ export async function searchDocs(query: string): Promise<{ content: ContentRespo
         };
     } catch (error) {
         console.error("Error searching documents:", error);
-        return {
-            content: [
-                {
-                    type: "text",
-                    text: `Error searching documents: ${error}`
-                }
-            ]
-        };
+        return textResult(`Error searching documents: ${(error as any)?.message || error}`, true);
     }
 }
 
-export async function deleteDoc(documentId: string): Promise<{ content: ContentResponse[] }> {
+export async function deleteDoc(documentId: string): Promise<ToolResult> {
+    const notReady = await ensureClients();
+    if (notReady) return notReady;
     try {
         // Get the document title first for confirmation
         const doc = await docsClient.documents.get({ documentId });
@@ -218,13 +221,6 @@ export async function deleteDoc(documentId: string): Promise<{ content: ContentR
         };
     } catch (error) {
         console.error(`Error deleting document ${documentId}:`, error);
-        return {
-            content: [
-                {
-                    type: "text",
-                    text: `Error deleting document: ${error}`
-                }
-            ]
-        };
+        return textResult(`Error deleting document: ${(error as any)?.message || error}`, true);
     }
 } 
