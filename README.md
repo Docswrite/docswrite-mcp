@@ -1,11 +1,75 @@
 # Docswrite MCP Server
 
-Publish Google Docs to WordPress, Webflow, Contentful, Shopify, GitHub, Dev.to,
-Hashnode, Medium, Ghost and Docswrite blogs from Claude, Cursor, or any other MCP client.
+Publish content and Google Docs to WordPress, Webflow, Contentful, Shopify, GitHub, Dev.to,
+Hashnode, Medium, Ghost, Docswrite blogs, X and LinkedIn from Claude, ChatGPT, Cursor, or
+any other MCP client.
 Docswrite turns the doc (headings, images, links, tables) into a formatted post,
 uploads the images, and fills in SEO fields.
 
-## Quick start
+## Remote server (recommended): `https://api.docswrite.com/mcp`
+
+Docswrite now hosts the MCP server. There is nothing to install: add the URL as a
+remote / custom connector and sign in to Docswrite when the client asks (OAuth 2.1
+with dynamic client registration; you approve the connection for one organization
+and can revoke it any time). Clients without OAuth can send an org API key instead
+(`Authorization: Bearer dw_live_...` or `x-api-key`).
+
+It publishes **content** directly: the assistant sends the post as Markdown or HTML
+(title, excerpt, tags, categories, slug, SEO fields, canonical URL, images) to one
+or many connections at once (WordPress, the WordPress plugin, Webflow, Contentful,
+Shopify, GitHub, Ghost, Medium, Dev.to, Hashnode, Docswrite blogs, X, LinkedIn), as
+a draft, now or scheduled. A Google Doc URL still works as the source.
+
+| Tool | What it does |
+|---|---|
+| `list_connections` | Connected blogs, CMSs and social accounts (ids for `publish_post`) |
+| `publish_post` | Publish content to one or many connections (draft / publish / schedule; `idempotency_key`) |
+| `list_posts` | Posts across connections with status, URL and source |
+| `get_post_status` | Follow a publish (`job:…`) or look up a post (`post:…`, `social:…`) |
+| `update_post` | Re-publish a post with changes, or reschedule it |
+| `get_account_info` | The connected user, organization, plan and remaining free posts |
+| `list_pricing_plans` / `upgrade_plan` | Plans, and a Stripe checkout link (never charges by itself) |
+| `search` / `fetch` | Search and read the organization's posts (ChatGPT connectors, deep research) |
+
+**Claude (claude.ai / Desktop):** Settings -> Connectors -> Add custom connector ->
+`https://api.docswrite.com/mcp`.
+
+**ChatGPT:** Settings -> Connectors (developer mode) -> Create -> MCP server URL
+`https://api.docswrite.com/mcp`, authentication OAuth.
+
+**Claude Code:**
+
+```bash
+claude mcp add --transport http docswrite https://api.docswrite.com/mcp
+# or with an org API key instead of OAuth:
+claude mcp add --transport http docswrite https://api.docswrite.com/mcp --header "Authorization: Bearer dw_live_..."
+```
+
+**Cursor / VS Code / Windsurf** (`mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "docswrite": { "url": "https://api.docswrite.com/mcp" }
+  }
+}
+```
+
+**MCP Inspector:**
+
+```bash
+npx @modelcontextprotocol/inspector --cli https://api.docswrite.com/mcp --transport http \
+  --header "Authorization: Bearer dw_live_..." --method tools/list
+```
+
+The same publishing is available over REST: `POST https://api.docswrite.com/api/v1/posts`
+(see https://api.docswrite.com/openapi.json and https://api.docswrite.com/auth.md).
+
+The rest of this README covers the **local stdio server** in this repository, which
+still works (for clients that only run local servers, or to publish from Google Docs
+with your own Google OAuth client).
+
+## Quick start (local stdio server)
 
 1. In the Docswrite dashboard, open **Settings -> API Keys** (https://docswrite.com/dashboard/api-keys)
    and create an **org API key** (`dw_live_...`). One key reaches every connection of your
